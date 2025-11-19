@@ -1,15 +1,63 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:app_settings/app_settings.dart';
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:timezone/timezone.dart' as tz;
 import '../../data/todo.dart';
 
 final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
+// Retro palette
+const Color bg     = Color(0xFF1A1A2E);
+const Color panel  = Color(0xFF16213E);
+const Color accent = Color(0xFFE43F5A);
+
+/// Paints an 8-bit starfield + pixel-ground
+class _PixelBackgroundPainter extends CustomPainter {
+  final List<Offset> stars;
+  _PixelBackgroundPainter(this.stars);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint();
+
+    // deep-space fill
+    paint.color = const Color(0xFF000010);
+    canvas.drawRect(Offset.zero & size, paint);
+
+    // tiny 2×2 stars
+    paint.color = Colors.white;
+    for (final s in stars) {
+      canvas.drawRect(
+        Rect.fromLTWH(s.dx * size.width, s.dy * size.height, 2, 2),
+        paint,
+      );
+    }
+
+    // pixel-ground tiles
+    paint.color = const Color(0xFF111111);
+    final tile = 16.0;
+    final cols = (size.width / tile).ceil();
+    for (var i = 0; i < cols; i++) {
+      canvas.drawRect(
+        Rect.fromLTWH(i * tile, size.height - tile, tile, tile),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PixelBackgroundPainter old) => false;
+}
+
 class DetailScreen extends StatefulWidget {
   final Todo todo;
-
   const DetailScreen({super.key, required this.todo});
 
   @override
@@ -18,110 +66,108 @@ class DetailScreen extends StatefulWidget {
 
 class _DetailScreenState extends State<DetailScreen> {
   late TextEditingController _textController;
+  late TextEditingController _descriptionController;
   DateTime? _selectedDueDate;
+  late Set<String> _selectedLabels;
+  final List<String> _allLabels = ['Work', 'Personal', 'Urgent', 'Shopping'];
+
+  // Pixel stars
+  final List<Offset> _pixelStars = List.generate(
+    100,
+        (_) => Offset(Random().nextDouble(), Random().nextDouble()),
+  );
 
   @override
   void initState() {
     super.initState();
-    _textController = TextEditingController(text: widget.todo.text);
-    _selectedDueDate = widget.todo.dueAt;
+    _textController        = TextEditingController(text: widget.todo.text);
+    _descriptionController = TextEditingController(text: widget.todo.description);
+    _selectedDueDate       = widget.todo.dueAt;
+    _selectedLabels        = widget.todo.labels.toSet();
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
   }
 
   Future<void> _delete() async {
     try {
       await FirebaseFirestore.instance.collection('todos').doc(widget.todo.id).delete();
       if (mounted) {
-        Navigator.pop(context);
+        Navigator.pop(context, true);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Todo deleted!')),
+          SnackBar(
+            content: Text('Todo deleted!', style: GoogleFonts.pressStart2p(color: Colors.white, fontSize: 10)),
+            backgroundColor: panel,
+          ),
         );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to delete todo: $e')),
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete: $e', style: GoogleFonts.pressStart2p(color: Colors.white, fontSize: 10)),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
     }
   }
 
-  Future<void> _updateText(String newText) async {
-    try {
-      await FirebaseFirestore.instance.collection('todos').doc(widget.todo.id).update({'text': newText});
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Todo updated!')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update todo: $e')),
-        );
-      }
+  Future<void> _saveChanges() async {
+    final doc = FirebaseFirestore.instance.collection('todos').doc(widget.todo.id);
+    final updates = <String, dynamic>{};
+    if (_textController.text != widget.todo.text) updates['text'] = _textController.text;
+    if (_descriptionController.text != widget.todo.description) updates['description'] = _descriptionController.text;
+    if (!setEquals(_selectedLabels, widget.todo.labels.toSet())) updates['labels'] = _selectedLabels.toList();
+    if (_selectedDueDate != widget.todo.dueAt) {
+      updates['dueAt'] = _selectedDueDate == null ? null : Timestamp.fromDate(_selectedDueDate!);
+      // schedule notification if needed:
+      if (_selectedDueDate != null) _scheduleNotification(widget.todo.id, _selectedDueDate!, _textController.text);
     }
-  }
-
-  Future<void> _updateDueDate(DateTime? newDueDate) async {
-    try {
-      await FirebaseFirestore.instance
-          .collection('todos')
-          .doc(widget.todo.id)
-          .update({'dueAt': newDueDate == null ? null : Timestamp.fromDate(newDueDate)});
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update todo: $e')),
-        );
-      }
+    if (updates.isNotEmpty) {
+      await doc.update(updates);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Todo updated!', style: GoogleFonts.pressStart2p(color: Colors.white, fontSize: 10)),
+          backgroundColor: panel,
+        ),
+      );
     }
+    Navigator.pop(context, true);
   }
 
   Future<bool> _requestNotificationPermission() async {
     final isGranted = await flutterLocalNotificationsPlugin
-            .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-            ?.requestNotificationsPermission() ??
-        false;
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission() ?? false;
     return isGranted;
   }
 
-  void _showPermissionDeniedSnackbar(BuildContext context) {
+  void _showPermissionDeniedSnackbar() {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          'You need to enable notifications to set due date.',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white),
-        ),
+        content: Text('Enable notifications to set due date.', style: GoogleFonts.pressStart2p(color: Colors.white, fontSize: 10)),
         backgroundColor: Colors.redAccent,
-        duration: Duration(seconds: 10),
         action: SnackBarAction(
-          label: 'Open Settings',
+          label: 'Settings',
           textColor: Colors.white,
-          onPressed: () {
-            AppSettings.openAppSettings(
-              type: AppSettingsType.notification,
-            );
-          },
+          onPressed: () => AppSettings.openAppSettings(type: AppSettingsType.notification),
         ),
       ),
     );
   }
 
   Future<void> _initializeNotifications() async {
-    final initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
-    final InitializationSettings initializationSettings = InitializationSettings(
-      android: initializationSettingsAndroid,
-    );
+    final androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     await flutterLocalNotificationsPlugin.initialize(
-      initializationSettings,
+      InitializationSettings(android: androidSettings),
     );
   }
 
-  Future<void> _scheduleNotification(
-    String todoId,
-    DateTime dueDate,
-    String text,
-  ) async {
+  Future<void> _scheduleNotification(String todoId, DateTime dueDate, String text) async {
+    await _initializeNotifications();
     final tzDateTime = tz.TZDateTime.from(dueDate, tz.local);
     await flutterLocalNotificationsPlugin.zonedSchedule(
       todoId.hashCode,
@@ -129,144 +175,174 @@ class _DetailScreenState extends State<DetailScreen> {
       text,
       tzDateTime,
       const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'general_channel',
-          'General Notifications',
-        ),
+        android: AndroidNotificationDetails('general_channel', 'General Notifications'),
       ),
       androidScheduleMode: AndroidScheduleMode.inexact,
       matchDateTimeComponents: DateTimeComponents.dateAndTime,
     );
   }
 
-  @override
-  void dispose() {
-    _textController.dispose();
-    super.dispose();
+  Future<void> _pickDueDate() async {
+    if (!await _requestNotificationPermission()) {
+      _showPermissionDeniedSnackbar();
+      return;
+    }
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _selectedDueDate ?? DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime(2050),
+    );
+    if (pickedDate == null) return;
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: _selectedDueDate != null
+          ? TimeOfDay.fromDateTime(_selectedDueDate!)
+          : TimeOfDay.now(),
+    );
+    if (pickedTime == null) return;
+    setState(() {
+      _selectedDueDate = DateTime(
+        pickedDate.year, pickedDate.month, pickedDate.day,
+        pickedTime.hour, pickedTime.minute,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Details'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete),
-            onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Delete Todo'),
-                  content: const Text('Are you sure you want to delete this todo?'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('Cancel'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      child: const Text('Delete'),
-                    ),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await _delete();
-              }
-            },
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 32.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: _textController,
-              decoration: const InputDecoration(
-                border: UnderlineInputBorder(),
+    final pixelHeader = GoogleFonts.pressStart2p(color: accent, fontSize: 16);
+    final pixelText   = GoogleFonts.pressStart2p(color: Colors.white, fontSize: 10);
+
+    return Stack(
+      children: [
+        // Pixel background
+        CustomPaint(
+          size: MediaQuery.of(context).size,
+          painter: _PixelBackgroundPainter(_pixelStars),
+        ),
+
+        Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            backgroundColor: panel,
+            title: Text('DETAILS', style: pixelHeader),
+            centerTitle: true,
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.delete),
+                onPressed: _delete,
               ),
-              onSubmitted: (newText) async {
-                if (newText.isNotEmpty && newText != widget.todo.text) {
-                  await _updateText(newText);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
-            ListTile(
-              title: const Text('Due Date'),
-              subtitle: Text(_selectedDueDate?.toLocal().toString().split('.')[0] ?? 'No due date'),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_selectedDueDate != null)
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () async {
-                        _updateDueDate(null);
+            ],
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(children: [
+              // Task title
+              _pixelInputContainer(
+                child: TextField(
+                  controller: _textController,
+                  style: pixelText,
+                  decoration: InputDecoration(
+                    hintText: 'Task',
+                    hintStyle: pixelText.copyWith(color: Colors.white38),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.all(8),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Description
+              _pixelInputContainer(
+                child: TextField(
+                  controller: _descriptionController,
+                  style: pixelText,
+                  maxLines: 2,
+                  decoration: InputDecoration(
+                    hintText: 'Description',
+                    hintStyle: pixelText.copyWith(color: Colors.white38),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.all(8),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Due date picker
+              _pixelInputContainer(
+                child: ListTile(
+                  title: Text('Due Date', style: pixelText),
+                  subtitle: Text(
+                    _selectedDueDate != null
+                        ? _selectedDueDate!.toLocal().toString().split('.')[0]
+                        : 'None',
+                    style: pixelText.copyWith(color: Colors.white54),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.calendar_today),
+                    color: accent,
+                    onPressed: _pickDueDate,
+                  ),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Labels
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Labels:', style: pixelText),
+              ),
+              Wrap(
+                spacing: 6,
+                children: _allLabels.map((lbl) {
+                  final selected = _selectedLabels.contains(lbl);
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: selected ? accent : panel,
+                      border: Border.all(color: accent, width: 2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                    child: FilterChip(
+                      label: Text(lbl, style: pixelText),
+                      selected: selected,
+                      selectedColor: accent,
+                      backgroundColor: panel,
+                      checkmarkColor: panel,
+                      onSelected: (sel) {
                         setState(() {
-                          _selectedDueDate = null;
+                          sel ? _selectedLabels.add(lbl) : _selectedLabels.remove(lbl);
                         });
                       },
                     ),
-                  IconButton(
-                    icon: const Icon(Icons.calendar_today),
-                    onPressed: () async {
-                      final isGranted = await _requestNotificationPermission();
-                      if (!context.mounted) return;
-
-                      if (!isGranted) {
-                        _showPermissionDeniedSnackbar(context);
-                        return;
-                      }
-
-                      await _initializeNotifications();
-                      if (!context.mounted) return;
-
-                      final selectedDate = await showDatePicker(
-                        context: context,
-                        initialDate: _selectedDueDate ?? DateTime.now(),
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime(2050),
-                      );
-                      if (!context.mounted) return;
-                      if (selectedDate == null) return;
-
-                      final selectedTime = await showTimePicker(
-                        context: context,
-                        initialTime:
-                            _selectedDueDate != null ? TimeOfDay.fromDateTime(_selectedDueDate!) : TimeOfDay.now(),
-                      );
-                      if (selectedTime == null) return;
-
-                      final DateTime dueDate = DateTime(
-                        selectedDate.year,
-                        selectedDate.month,
-                        selectedDate.day,
-                        selectedTime.hour,
-                        selectedTime.minute,
-                      );
-
-                      setState(() {
-                        _selectedDueDate = dueDate;
-                      });
-
-                      await _updateDueDate(dueDate);
-                      await _scheduleNotification(
-                        widget.todo.id,
-                        dueDate,
-                        widget.todo.text,
-                      );
-                    },
-                  ),
-                ],
+                  );
+                }).toList(),
               ),
-            ),
-          ],
+              const Spacer(),
+              // Save button
+              Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: accent,
+                  border: Border.all(color: accent, width: 2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                child: TextButton(
+                  onPressed: _saveChanges,
+                  child: Text('SAVE', style: pixelText.copyWith(color: panel)),
+                ),
+              ),
+            ]),
+          ),
         ),
-      ),
+      ],
     );
   }
+
+  Widget _pixelInputContainer({required Widget child}) => Container(
+    decoration: BoxDecoration(
+      color: panel,
+      border: Border.all(color: accent, width: 2),
+      borderRadius: BorderRadius.circular(2),
+    ),
+    child: child,
+  );
 }

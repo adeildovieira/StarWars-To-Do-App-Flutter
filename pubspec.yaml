@@ -1,11 +1,11 @@
 name: todo_spring_2025
-description: "TODO Spring 2025"
+description: "DART Sidious's TODO"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 2.1.0+20252
 
 environment:
-  sdk: ^3.6.2
+  sdk: ^3.6.1
 
 dependencies:
   flutter:
@@ -17,13 +17,27 @@ dependencies:
   cloud_firestore: ^5.6.5
   google_fonts: ^6.2.1
   flutter_local_notifications: ^19.0.0
+  flutter_launcher_icons: ^0.13.1
   app_settings: ^5.1.1
   timezone: ^0.10.0
+  table_calendar: ^3.0.9
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
 
+flutter_launcher_icons:
+  android: true
+  image_path: "icon/icon.png" # Caminho para o seu ícone principal
+
 flutter:
   uses-material-design: true
+
+  assets:
+    - fonts/
+
+  fonts:
+    - family: PressStart2P
+      fonts:
+        - asset: fonts/PressStart2P-Regular.ttf
